@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"log"
 	"net/http"
 	"strconv"
+	"time"
 	"wildberries/pkg/product"
 	"wildberries/pkg/session"
 
@@ -28,15 +30,14 @@ type ProductHandler struct {
 func (h *ProductHandler) Index(w http.ResponseWriter, r *http.Request) {
 	orderBy := r.URL.Query().Get("order_by")
 	sess, err := session.SessionFromContext(r.Context())
-	bsk := &product.Basket{}
 	if err == nil {
-		h.ProductRepo.AddBasket(sess.UserID)
-		bsk, err = h.ProductRepo.GetBasketByID(sess.UserID)
+		order, err := h.ProductRepo.GetOrdersByID(sess.UserID)
 		if err != nil {
+			fmt.Print("orders")
 			http.Error(w, `DB err`, http.StatusInternalServerError)
 			return
 		}
-		for _, prd := range bsk.Products {
+		for _, prd := range order.Products {
 			sess.AddPurchase(prd.ID)
 		}
 	}
@@ -55,8 +56,16 @@ func (h *ProductHandler) Index(w http.ResponseWriter, r *http.Request) {
 	}{
 		Products:   elems,
 		Session:    sess,
-		TotalCount: bsk.TotalCount,
+		TotalCount: uint32(len(sess.Purchases)),
 	})
+	if err != nil {
+		http.Error(w, "Template error", http.StatusInternalServerError)
+		return
+	}
+}
+func (h *ProductHandler) Success(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	err := h.Tmpl.ExecuteTemplate(w, "message.html", nil)
 	if err != nil {
 		http.Error(w, "Template error", http.StatusInternalServerError)
 		return
@@ -64,8 +73,18 @@ func (h *ProductHandler) Index(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProductHandler) About(w http.ResponseWriter, r *http.Request) {
+	sess, err := session.SessionFromContext(r.Context())
+	if err != nil {
+		log.Print("no auth")
+	}
+
 	w.Header().Set("Content-Type", "text/html")
-	err := h.Tmpl.ExecuteTemplate(w, "about.html", nil)
+	err = h.Tmpl.ExecuteTemplate(w, "about.html", struct {
+		Session    *session.Session
+		TotalCount uint32
+	}{
+		Session: sess,
+	})
 	if err != nil {
 		http.Error(w, "Template error", http.StatusInternalServerError)
 		return
@@ -83,14 +102,8 @@ func (h *ProductHandler) Privacy(w http.ResponseWriter, r *http.Request) {
 
 func (h *ProductHandler) Product(w http.ResponseWriter, r *http.Request) {
 	sess, err := session.SessionFromContext(r.Context())
-	bsk := &product.Basket{}
-	if err == nil {
-		h.ProductRepo.AddBasket(sess.UserID)
-		bsk, err = h.ProductRepo.GetBasketByID(sess.UserID)
-		if err != nil {
-			http.Error(w, `DB err`, http.StatusInternalServerError)
-			return
-		}
+	if err != nil {
+		log.Print("no auth")
 	}
 
 	vars := mux.Vars(r)
@@ -120,7 +133,7 @@ func (h *ProductHandler) Product(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Print("ebal", prds)
+	fmt.Print("gavno:", sess.IsPurchased(prod.ID))
 
 	w.Header().Set("Content-Type", "text/html")
 	err = h.Tmpl.ExecuteTemplate(w, "product.html", struct {
@@ -129,10 +142,9 @@ func (h *ProductHandler) Product(w http.ResponseWriter, r *http.Request) {
 		Session    *session.Session
 		TotalCount uint32
 	}{
-		Product:    prod,
-		Related:    prds,
-		Session:    sess,
-		TotalCount: bsk.TotalCount,
+		Product: prod,
+		Related: prds,
+		Session: sess,
 	})
 	if err != nil {
 		http.Error(w, "Template error", http.StatusInternalServerError)
@@ -162,14 +174,17 @@ func (h *ProductHandler) AddProductToBasket(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	prodId, err := h.ProductRepo.AddProductToBasket(sess.UserID, prod)
+	prodId, err := h.ProductRepo.AddOrder(sess.UserID, prod)
 	if err != nil {
 		fmt.Print(err.Error())
 		http.Error(w, "DB Error", http.StatusInternalServerError)
 		return
 	}
 
-	sess.AddPurchase(prodId)
+	sess.AddPurchase(uint32(id))
+
+	fmt.Print(id)
+
 	w.Header().Set("Content-type", "application/json")
 	respJSON, _ := json.Marshal(map[string]uint32{
 		"updated": prodId,
@@ -190,16 +205,24 @@ func (h *ProductHandler) DeleteProductFromBasket(w http.ResponseWriter, r *http.
 		return
 	}
 
-	_, err = h.ProductRepo.DeleteProductFromBasket(sess.UserID, uint32(id))
+	_, err = h.ProductRepo.DeleteOrder(sess.UserID, uint32(id))
 	if err != nil {
 		http.Error(w, "DB Error", http.StatusInternalServerError)
 		return
 	}
 
 	sess.DeletePurchase(uint32(id))
+
+	ord, err := h.ProductRepo.GetOrdersByID(sess.UserID)
+	if err != nil {
+		http.Error(w, "DB Error", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-type", "application/json")
-	respJSON, _ := json.Marshal(map[string]uint32{
+	respJSON, _ := json.Marshal(map[string]interface{}{
 		"updated": uint32(id),
+		"price":   ord.TotalPrice,
 	})
 	w.Write(respJSON)
 }
@@ -211,7 +234,7 @@ func (h *ProductHandler) History(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	landInf, err := h.ProductRepo.GetOrders(sess.UserID)
+	landInf, err := h.ProductRepo.GetDeliveryOrdersByID(sess.UserID)
 	if err != nil {
 		http.Error(w, "bd Error", http.StatusBadRequest)
 		return
@@ -219,9 +242,9 @@ func (h *ProductHandler) History(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html")
 	err = h.Tmpl.ExecuteTemplate(w, "history.html", struct {
-		Landings []*product.LandingInfo
+		Orders []*product.DeliveryOrder
 	}{
-		Landings: landInf,
+		Orders: landInf,
 	})
 	if err != nil {
 		http.Error(w, "Template error", http.StatusInternalServerError)
@@ -231,10 +254,9 @@ func (h *ProductHandler) History(w http.ResponseWriter, r *http.Request) {
 
 func (h *ProductHandler) Basket(w http.ResponseWriter, r *http.Request) {
 	sess, err := session.SessionFromContext(r.Context())
-	bsk := &product.Basket{}
+	bsk := &product.Order{}
 	if err == nil {
-		h.ProductRepo.AddBasket(sess.UserID)
-		bsk, err = h.ProductRepo.GetBasketByID(sess.UserID)
+		bsk, err = h.ProductRepo.GetOrdersByID(sess.UserID)
 		if err != nil {
 			http.Error(w, `DB err`, http.StatusInternalServerError)
 			return
@@ -285,7 +307,7 @@ func (h *ProductHandler) AddProductForm(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-func (h *ProductHandler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
+func (h *ProductHandler) UpdateProductForm(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id, err := strconv.Atoi(vars["id"])
 	if err != nil {
@@ -321,7 +343,7 @@ func (h *ProductHandler) RegisterOrder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sess Error", http.StatusBadRequest)
 		return
 	}
-	bsk, err := h.ProductRepo.GetBasketByID(sess.UserID)
+	bsk, err := h.ProductRepo.GetOrdersByID(sess.UserID)
 	if err != nil {
 		http.Error(w, "DB Error", http.StatusBadRequest)
 		return
@@ -332,7 +354,7 @@ func (h *ProductHandler) RegisterOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fmt.Print("kekw", id)
-	http.Redirect(w, r, "/", http.StatusFound)
+	http.Redirect(w, r, "/register_order/success", http.StatusFound)
 }
 
 func (h *ProductHandler) AddProduct(w http.ResponseWriter, r *http.Request) {
@@ -345,9 +367,8 @@ func (h *ProductHandler) AddProduct(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `Bad form`, http.StatusBadRequest)
 		return
 	}
-	fmt.Print("продукт", product)
+	product.CreatedAt = time.Now().UTC()
 
-	// Get handler for filename, size and headers
 	file, _, err := r.FormFile("file")
 	if err != nil {
 		fmt.Println("Error Retrieving the File")

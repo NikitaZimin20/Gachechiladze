@@ -1,13 +1,5 @@
 package user
 
-import "errors"
-
-var (
-	ErrNoUser     = errors.New("no user found")
-	ErrUserExists = errors.New("user already exists")
-	ErrBadPass    = errors.New("invald password")
-)
-
 type UserMemoryRepository struct {
 	data   map[string]*User
 	lastID uint32

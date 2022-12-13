@@ -10,10 +10,11 @@ import (
 
 var (
 	noAuthUrls = map[string]struct{}{
-		"/login":    {},
-		"/register": {},
-		"/sign_in":  {},
-		"/sign_up":  {},
+		"/login":                  {},
+		"/register":               {},
+		"/sign_in":                {},
+		"/sign_up":                {},
+		"/register_order/success": {},
 	}
 	noSessUrls = map[string]struct{}{
 		"/":        {},
