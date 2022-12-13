@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"html/template"
 	"net/http"
 
@@ -10,6 +11,8 @@ import (
 	"wildberries/pkg/session"
 	"wildberries/pkg/user"
 
+	_ "github.com/go-sql-driver/mysql"
+
 	"github.com/cloudinary/cloudinary-go/v2"
 	"github.com/gorilla/mux"
 	"go.uber.org/zap"
@@ -17,13 +20,26 @@ import (
 
 func main() {
 	templates := template.Must(template.ParseGlob("./static/html/*"))
-	userRepo := user.NewMemoryRepo()
-	productRepo := product.NewMemoryRepo()
 	sm := session.NewSessionsManager()
 	zapLogger, _ := zap.NewProduction()
 	defer zapLogger.Sync() // flushes buffer, if any
 	logger := zapLogger.Sugar()
 	cld, _ := cloudinary.NewFromParams("davauqkbe", "637661274245857", "xf9AYi4mcK2yLIfi3ERiTFVqeq4")
+
+	dsn := "root:12345678@tcp(localhost:3306)/agileProject?"
+	dsn += "charset=utf8"
+	dsn += "&interpolateParams=true"
+	dsn += "&parseTime=true"
+
+	mysqlDB, err := sql.Open("mysql", dsn)
+	if err != nil {
+		panic(err)
+	}
+
+	mysqlDB.SetMaxOpenConns(10)
+
+	productRepo := product.NewMysqlRepo(mysqlDB)
+	userRepo := user.NewMysqlRepo(mysqlDB)
 
 	userHandler := &handlers.UserHandler{
 		Tmpl:     templates,
@@ -51,12 +67,16 @@ func main() {
 	r.HandleFunc("/about", productHandler.About).Methods("GET")
 	r.HandleFunc("/privacy", productHandler.Privacy).Methods("GET")
 	r.HandleFunc("/history", productHandler.History).Methods("GET")
+	r.HandleFunc("/", productHandler.History).Methods("GET")
+	r.HandleFunc("/register_order/success", productHandler.Success).Methods("GET")
 
 	r.HandleFunc("/products/new", productHandler.AddProductForm).Methods("GET")
 	r.HandleFunc("/products/new", productHandler.AddProduct).Methods("POST")
 	r.HandleFunc("/products/{id}", productHandler.Product).Methods("PUT")
 	r.HandleFunc("/products/{id}", productHandler.Product).Methods("GET")
 	r.HandleFunc("/products/{id}", productHandler.DeleteProduct).Methods("DELETE")
+	//r.HandleFunc("/products/edit/{id}", productHandler.UpdateProductForm).Methods("GET")
+	//r.HandleFunc("/products/edit/{id}", productHandler.UpdateProduct).Methods("POST")
 
 	r.HandleFunc("/basket/{id}", productHandler.AddProductToBasket).Methods("GET")
 	r.HandleFunc("/basket/{id}", productHandler.DeleteProductFromBasket).Methods("DELETE")
